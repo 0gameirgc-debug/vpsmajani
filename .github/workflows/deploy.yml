@@ -1,16 +1,58 @@
-- name: Install xray
-  run: |
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-- name: Configure & start xray
-  run: |
-    # ساخت فایل کانفیگ
-    cat > /usr/local/etc/xray/config.json << 'EOF'
-    { "log": { "loglevel": "warning" }, "inbounds": [ { "port": 10808, "protocol": "socks", "settings": { "auth": "noauth" } } ], "outbounds": [ { "protocol": "vless", "settings": { "vnext": [ { "address": "آدرس-سرور", "port": 443, "users": [ { "id": "UUID-شما", "flow": "xtls-rprx-vision" } ] } ] } } ] }
-    EOF
-    xray run -c /usr/local/etc/xray/config.json &
-    sleep 2
-- name: Set proxy env
-  run: |
-    echo "http_proxy=http://127.0.0.1:10808" >> $GITHUB_ENV
-    echo "https_proxy=http://127.0.0.1:10808" >> $GITHUB_ENV
-    echo "ALL_PROXY=socks5://127.0.0.1:10808" >> $GITHUB_ENV
+name: Cloud-Ubuntu
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Update System & Install SSH Server
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y openssh-server
+          sudo systemctl enable --now ssh
+          sudo systemctl status ssh --no-pager
+
+      - name: 2. Create Admin Account
+        run: |
+          USERNAME="nvdadmin"
+          PASSWORD="P@ssw0rd1qazXSW@#"
+          sudo useradd -m -s /bin/bash "$USERNAME" || true
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo "$USERNAME"
+          # Allow password auth for easy login
+          sudo sed -i 's/^#PasswordAuthentication/PasswordAuthentication/' /etc/ssh/sshd_config
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+
+      - name: 3. Install & Connect Tailscale VPN
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          # Install Tailscale
+          curl -fsSL https://tailscale.com/install.sh | sh
+          
+          # Connect to Tailscale network
+          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="github-ssh-server"
+          
+          sleep 5
+          
+          # Get Tailscale IPv4 address
+          TS_IP=$(sudo tailscale ip -4)
+          
+          echo ""
+          echo "=================================================="
+          echo "  >>> READY! <<<"
+          echo "  Tailscale IP : $TS_IP"
+          echo "  Username     : nvdadmin"
+          echo "  Password     : P@ssw0rd1qazXSW@#"
+          echo "=================================================="
+
+      - name: 4. Keep Server Alive (48 Hours)
+        run: |
+          for ((i=1; i<=2880; i++)); do
+            sleep 60
+            echo "[$i/2880] Server running..."
+          done
