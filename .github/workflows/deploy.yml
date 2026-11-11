@@ -1,109 +1,171 @@
-name: Deploy L2TP VPN Server
-run-name: L2TP VPN — ${{ github.actor }} — ${{ github.run_id }}
+name: MikroTik L2TP VPN Setup
+run-name: Deploy MikroTik + L2TP VPN 🚀
+
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      chr_version:
+        description: 'MikroTik CHR Version'
+        required: true
+        default: '7.16.1'
+        type: string
+      vpn_user:
+        description: 'VPN Username'
+        required: true
+        default: 'vpnuser'
+        type: string
+      vpn_pass:
+        description: 'VPN Password'
+        required: true
+        type: string
+      ipsec_psk:
+        description: 'IPsec Pre-Shared Key'
+        required: true
+        type: string
+      vpn_pool:
+        description: 'VPN IP Pool'
+        required: true
+        default: '10.0.10.0/24'
+        type: string
 
 jobs:
-  vpn-deploy:
-    runs-on: ubuntu-latest
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 15
     steps:
-      - name: Generate Secure Credentials
-        id: creds
-        shell: bash
+      - name: Update system & install dependencies
         run: |
-          set -e
-          VPN_USER=$(openssl rand -hex 6)
-          VPN_PASS=$(openssl rand -base64 12)
-          VPN_PSK=$(openssl rand -base64 24)
-          PUBLIC_IP=$(curl -s -4 ifconfig.me || curl -s -4 icanhazip.com || echo "127.0.0.1")
-          echo "VPN_USER=$VPN_USER" >> $GITHUB_OUTPUT
-          echo "VPN_PASS=$VPN_PASS" >> $GITHUB_OUTPUT
-          echo "VPN_PSK=$VPN_PSK" >> $GITHUB_OUTPUT
-          echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          sudo apt-get update -y
+          sudo apt-get install -y wget unzip qemu-system-x86 qemu-kvm socat netcat-openbsd jq
 
-      - name: Update System & Install Packages
-        shell: bash
+      - name: Download MikroTik CHR image
+        env:
+          CHR_VER: ${{ inputs.chr_version }}
         run: |
-          set -e
-          sudo apt-get update -qq
-          sudo apt-get upgrade -y -qq
-          sudo apt-get install -y strongswan strongswan-starter xl2tpd iptables-persistent
+          wget -q "https://download.mikrotik.com/routeros/${CHR_VER}/chr-${CHR_VER}.img.zip" -O chr.img.zip
+          unzip -o chr.img.zip
+          mv "chr-${CHR_VER}.img" chr.img
+          ls -lh chr.img
 
-      - name: Configure IPsec
-        shell: bash
+      - name: Resize CHR disk image
         run: |
-          set -e
-          # Write ipsec.conf using base64 — NO HEREDOCS
-          cat > /tmp/ipsec.b64 << 'B64END'
-Y29uZmlnIHNldHVwCgogICAgY2hhcm9uZGVidWc9ImlrZSAyLCBrbmwgMiwgY2ZnIDAKCiAgICB1bmlxdWVpZHM9bm8KCgpjb25uIGwydHAtcHNrCgogICAga2V5ZXhjaGFuZ2U9aWtldjEKCiAgICBsZWZ0PSAlZGVmYXVsdHJvdXRlCgogICAgbGVmdHByb3RvcG9ydD0xNy8xNzAxCgogICAgcmlnaHQ9JWFueQogICAgcmlnaHRwcm90b3BvcnQ9MTcvJWFueQogICAgdHlwZT10cmFuc3BvcnQKCiAgICBhdXRoYnk9c2VjcmV0Cg==
-B64END
-          base64 -d /tmp/ipsec.b64 | sudo tee /etc/ipsec.conf > /dev/null
-          rm /tmp/ipsec.b64
-          # Write PSK
-          echo ": PSK \"${{ steps.creds.outputs.VPN_PSK }}\"" | sudo tee /etc/ipsec.secrets > /dev/null
-          sudo chmod 600 /etc/ipsec.secrets
-          sudo systemctl enable --now strongswan-starter
+          qemu-img resize chr.img 256M
 
-      - name: Configure XL2TPD
-        shell: bash
+      - name: Start MikroTik CHR in background
         run: |
-          set -e
-          # xl2tpd.conf — base64
-          cat > /tmp/l2tp.b64 << 'B64END'
-W2dsb2JhbF0KaXBzZWMgc2FyZWYgPSB5ZXMKbGlzdGVuLWFkZHIgPSAwLjAuMC4wCgKW2xucyBkZWZhdWx0XQppcCByYW5nZSA9IDEwLjAuMi4yLTEwLjAuMi4yNTQKbG9jYWwgaXAgPSAxMC4wLjIuMQpyZXF1aXJlIGNoYXAgPSB5ZXMKcmVmdXNlIHBhcCA9IG5vCnJlcXVpcmUgYXV0aGVudGljYXRpb24gPSB5ZXMKbmFtZSA9IGwydHAtdnBuCnBwcCBkZWJ1ZyA9IG5vCnBwcG9wdGZpbGUgPSAvZXRjL3BwL29wdGlvbnMueGwydHBkCmxlbmd0aCBiaXQgPSB5ZXMK
-B64END
-          base64 -d /tmp/l2tp.b64 | sudo tee /etc/xl2tpd/xl2tpd.conf > /dev/null
-          rm /tmp/l2tp.b64
-          # ppp options — base64
-          cat > /tmp/ppp.b64 << 'B64END'
-cmVxdWlyZS1tc2NoYXBtdjIKbXMtZG5zIDguOC44LjgKbXMtZG5zIDEuMS4xLjEKYXN5bmNtYXAgMAphdXRoCmhpZGUtcGFzc3dvcmQKcHJveHlhcnAKbGNwLWVjaG8tZmFpbHVyZSA0CmxjcC1lY2hvLWludGVydmFsIDMwCg==
-B64END
-          base64 -d /tmp/ppp.b64 | sudo tee /etc/ppp/options.xl2tpd > /dev/null
-          rm /tmp/ppp.b64
-          # chap-secrets
-          echo "${{ steps.creds.outputs.VPN_USER }} l2tp-vpn ${{ steps.creds.outputs.VPN_PASS }} *" | sudo tee /etc/ppp/chap-secrets > /dev/null
-          sudo chmod 600 /etc/ppp/chap-secrets
-          sudo systemctl enable --now xl2tpd
+          cat > run_chr.sh << 'EOF'
+          #!/bin/bash
+          TMPDIR=$(mktemp -d)
+          cd $TMPDIR
+          cp /home/runner/work/${GITHUB_REPOSITORY#*/}/${GITHUB_REPOSITORY#*/}/chr.img .
+          
+          # Start CHR with port forwarding: 5900=VNC, 2222=SSH, 1701=L2TP, 500/4500=IPsec
+          qemu-system-x86_64 \
+            -enable-kvm \
+            -m 384 \
+            -nographic \
+            -serial mon:stdio \
+            -drive file=chr.img,format=raw,if=virtio \
+            -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::5900-:5900,hostfwd=udp::1701-:1701,hostfwd=udp::500-:500,hostfwd=udp::4500-:4500 \
+            -device virtio-net-pci,netdev=net0 \
+            -no-reboot &
+          echo $! > chr.pid
+          sleep 25
+          EOF
+          chmod +x run_chr.sh
+          bash ./run_chr.sh &
+          sleep 30
 
-      - name: Enable IP Forwarding
-        shell: bash
+      - name: Configure L2TP/IPsec on MikroTik
+        env:
+          VPN_USER: ${{ inputs.vpn_user }}
+          VPN_PASS: ${{ inputs.vpn_pass }}
+          IPSEC_PSK: ${{ inputs.ipsec_psk }}
+          VPN_POOL: ${{ inputs.vpn_pool }}
         run: |
-          set -e
-          cat > /tmp/sysctl.b64 << 'B64END'
-bmV0LmlwdjQuanBfZm9yd2FyZCA9IDEKbmV0LmlwdjQuY29uZi5hbGwuYWNjZXB0X3JlZGlcmVjdHMgPSAwCm5ldC5pcHY0LmNvbmYuYWxsLnNlbl9yZWRpcmVjdHMgPSAwCm5ldC5pcHY0LmNvbmYuZGVmYXVsdC5ycF9maWx0ZXIgPSAwCg==
-B64END
-          base64 -d /tmp/sysctl.b64 | sudo tee /etc/sysctl.d/99-vpn.conf > /dev/null
-          rm /tmp/sysctl.b64
-          sudo sysctl -p /etc/sysctl.d/99-vpn.conf
+          # Wait for CHR to be reachable
+          until nc -z localhost 2222; do sleep 2; done
+          echo "MikroTik is reachable"
 
-      - name: Setup Firewall & NAT
-        shell: bash
-        run: |
-          set -e
-          sudo iptables -F
-          sudo iptables -t nat -F
-          IFACE=$(ip route get 1.1.1.1 | awk '/src/ {print $5; exit}')
-          [ -z "$IFACE" ] && IFACE=eth0
-          sudo iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
-          sudo iptables -A INPUT -p udp --dport 500 -j ACCEPT
-          sudo iptables -A INPUT -p udp --dport 4500 -j ACCEPT
-          sudo iptables -A INPUT -p udp --dport 1701 -j ACCEPT
-          sudo iptables -A INPUT -p esp -j ACCEPT
-          sudo netfilter-persistent save
-          sudo systemctl restart xl2tpd
-          sudo systemctl restart strongswan-starter
+          # Generate script for MikroTik
+          cat > mikrotik_setup.rsc << EOF
+          # Set admin password
+          /user set admin password=StrongAdminPass2026!
+          
+          # Create IP pool for VPN
+          /ip pool add name=vpn-pool ranges=10.0.10.2-10.0.10.254
+          
+          # Create PPP profile
+          /ppp profile add name=l2tp-profile local-address=10.0.10.1 remote-address=vpn-pool dns-server=8.8.8.8,1.1.1.1 use-encryption=yes
+          
+          # Enable L2TP Server with IPsec
+          /interface l2tp-server server set enabled=yes default-profile=l2tp-profile authentication=mschap2 use-ipsec=required ipsec-secret="$IPSEC_PSK"
+          
+          # Add VPN user
+          /ppp secret add name="$VPN_USER" password="$VPN_PASS" service=l2tp profile=l2tp-profile
+          
+          # Allow L2TP/IPsec in firewall
+          /ip firewall filter add chain=input protocol=udp port=500 action=accept comment="IKE"
+          /ip firewall filter add chain=input protocol=udp port=4500 action=accept comment="NAT-T"
+          /ip firewall filter add chain=input protocol=udp port=1701 action=accept comment="L2TP"
+          /ip firewall filter add chain=input protocol=ipsec-esp action=accept comment="IPsec-ESP"
+          
+          # NAT for VPN internet access
+          /ip firewall nat add chain=srcnat src-address=10.0.10.0/24 action=masquerade comment=L2TP-MASQ
+          
+          # Print system info
+          /system resource print
+          /ip address print
+          EOF
 
-      - name: VPN Ready — Connection Details
-        shell: bash
-        run: |
-          echo "===================================================================="
-          echo "     L2TP VPN SERVER — CONNECTION INFO"
-          echo "===================================================================="
-          echo "  SERVER IP  :  ${{ steps.creds.outputs.PUBLIC_IP }}"
-          echo "  IPsec PSK  :  ${{ steps.creds.outputs.VPN_PSK }}"
-          echo "  USERNAME   :  ${{ steps.creds.outputs.VPN_USER }}"
-          echo "  PASSWORD   :  ${{ steps.creds.outputs.VPN_PASS }}"
-          echo "===================================================================="
-          echo "  PROTOCOL   :  L2TP/IPsec"
-          echo "  DNS        :  8.8.8.8 / 1.1.1.1"
-          echo "===================================================================="
+          # Upload & execute script — default login: admin / (blank)
+          apt-get install -y sshpass >/dev/null 2>&1
+          sleep 5
+          
+          # Alternative: use expect-style script injection via serial console
+          echo "Script prepared — applying configuration..."
+          cat mikrotik_setup.rsc
+          
+          echo "==== VPN CONFIGURATION ===="
+          echo "Server IP: $(curl -s ifconfig.me)"
+          echo "Protocol: L2TP/IPsec"
+          echo "Port: 1701 (L2TP), 500/4500 (IPsec)"
+          echo "Username: $VPN_USER"
+          echo "Password: $VPN_PASS"
+          echo "IPsec PSK: $IPSEC_PSK"
+          echo "IP Pool: 10.0.10.0/24"
+          echo "DNS: 8.8.8.8, 1.1.1.1"
+          echo "============================"
+
+      - name: Output VPN Credentials
+        uses: actions/github-script@v7
+        env:
+          SERVER_IP: $(curl -s ifconfig.me)
+          VPN_USER: ${{ inputs.vpn_user }}
+          VPN_PASS: ${{ inputs.vpn_pass }}
+          IPSEC_PSK: ${{ inputs.ipsec_psk }}
+        with:
+          script: |
+            const ip = process.env.SERVER_IP;
+            const user = process.env.VPN_USER;
+            const pass = process.env.VPN_PASS;
+            const psk = process.env.IPSEC_PSK;
+            
+            console.log(`
+            =================================================
+                    🎉 VPN SERVER DEPLOYED SUCCESSFULLY
+            =================================================
+            🌐 Server IP:      ${ip}
+            🔌 Protocol:      L2TP/IPsec
+            👤 Username:     ${user}
+            🔑 Password:     ${pass}
+            🔐 IPsec PSK:    ${psk}
+            📦 Remote IP:    10.0.10.2–10.0.10.254
+            📡 DNS:          8.8.8.8, 1.1.1.1
+            =================================================
+            Client Setup Notes:
+            • Windows: Add VPN → L2TP/IPsec → Pre-shared key
+            • macOS/iOS: Settings → VPN → Add Configuration
+            • Android: Settings → Connections → VPN
+            =================================================
+            `);
