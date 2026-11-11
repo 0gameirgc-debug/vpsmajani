@@ -1,125 +1,16 @@
-name: Generate L2TP VPN Config
-run-name: 🔐 ساخت کانفیگ L2TP VPN
-
-on:
-  workflow_dispatch:
-    inputs:
-      server_address:
-        description: 'آی‌پی یا دامنه سرور VPN شما'
-        required: true
-        type: string
-      server_type:
-        description: 'نوع سرور'
-        required: true
-        default: 'generic'
-        type: choice
-        options:
-          - generic
-          - ubuntu/debian (hwdsl2 script)
-
-jobs:
-  generate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    
-    steps:
-      - name: 🔑 تولید اطلاعات تصادفی امن
-        id: gen
-        run: |
-          # تولید نام کاربری تصادفی
-          VPN_USER=$(openssl rand -base64 8 | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9')
-          # تولید پسورد قوی
-          VPN_PASS=$(openssl rand -base64 12)
-          # تولید کلید مشترک IPsec
-          IPSEC_PSK=$(openssl rand -base64 16)
-          # تولید نام اتصال
-          VPN_NAME="VPN-$(date +%Y%m%d-%H%M)"
-          
-          echo "user=$VPN_USER" >> $GITHUB_OUTPUT
-          echo "pass=$VPN_PASS" >> $GITHUB_OUTPUT
-          echo "psk=$IPSEC_PSK" >> $GITHUB_OUTPUT
-          echo "name=$VPN_NAME" >> $GITHUB_OUTPUT
-
-      - name: 📄 ساخت فایل‌های کانفیگ
-        env:
-          SERVER_ADDR: ${{ inputs.server_address }}
-          VPN_USER: ${{ steps.gen.outputs.user }}
-          VPN_PASS: ${{ steps.gen.outputs.pass }}
-          IPSEC_PSK: ${{ steps.gen.outputs.psk }}
-          VPN_NAME: ${{ steps.gen.outputs.name }}
-        run: |
-          cat > vpn-config.txt << EOF
-╔══════════════════════════════════════════════════════════╗
-║                کانفیگ اتصال L2TP/IPsec VPN                ║
-╚══════════════════════════════════════════════════════════╝
-
-🌐 آدرس سرور:     ${SERVER_ADDR}
-🔌 پروتکل:        L2TP/IPsec
-👤 نام کاربری:    ${VPN_USER}
-🔑 رمز عبور:      ${VPN_PASS}
-🔐 کلید IPsec:    ${IPSEC_PSK}
-📦 محدوده IP:     192.168.42.10–192.168.42.250
-📡 DNS سرورها:    8.8.8.8, 1.1.1.1
-
-══════════════════════════════════════════════════════════
-📱 راهنمای اتصال:
-
-🪟 ویندوز:
-  تنظیمات → شبکه و اینترنت → VPN → افزودن اتصال VPN
-  نوع: L2TP/IPsec
-  آدرس سرور: ${SERVER_ADDR}
-  در تنظیمات پیشرفته → کلید مشترک: ${IPSEC_PSK}
-  نام کاربری: ${VPN_USER}
-  رمز عبور: ${VPN_PASS}
-
-🍎 مک / آی‌اواس:
-  تنظیمات → عمومی → VPN → افزودن پیکربندی VPN
-  نوع: L2TP/IPsec
-  توضیح: ${VPN_NAME}
-  سرور: ${SERVER_ADDR}
-  نام حساب: ${VPN_USER}
-  رمز عبور: ${VPN_PASS}
-  کلید مشترک: ${IPSEC_PSK}
-
-🤖 اندروید:
-  تنظیمات → اتصالات → VPN → افزودن VPN
-  نوع: L2TP/IPsec PSK
-  آدرس سرور: ${SERVER_ADDR}
-  کلید مشترک: ${IPSEC_PSK}
-  نام کاربری: ${VPN_USER}
-  رمز عبور: ${VPN_PASS}
-
-🌐 روتر (میکروتیک/TP-Link/مای‌نت):
-  پروتکل اتصال: L2TP Client
-  آدرس سرور: ${SERVER_ADDR}
-  نام کاربری: ${VPN_USER}
-  رمز عبور: ${VPN_PASS}
-  فعال‌سازی IPsec: ✅ بله
-  کلید مشترک IPsec: ${IPSEC_PSK}
-
-══════════════════════════════════════════════════════════
-💡 راه‌اندازی سرور VPN روی اوبونتو (یک دستور):
-  wget https://get.vpnsetup.net -O vpn.sh && sudo sh vpn.sh
-  سپس اطلاعات بالا رو وارد کن.
-EOF
-
-          cat vpn-config.txt
-
-      - name: 💾 ذخیره کانفیگ به صورت فایل
-        uses: actions/upload-artifact@v4
-        with:
-          name: vpn-config
-          path: vpn-config.txt
-          retention-days: 30
-
-      - name: 📋 نمایش خلاصه اطلاعات
-        run: |
-          echo "=================================================="
-          echo "✅ کانفیگ VPN آماده شد!"
-          echo "فایل کامل در قسمت Artifacts موجود است."
-          echo "=================================================="
-          echo "آدرس سرور:     ${{ inputs.server_address }}"
-          echo "نام کاربری:    ${{ steps.gen.outputs.user }}"
-          echo "رمز عبور:      ${{ steps.gen.outputs.pass }}"
-          echo "کلید IPsec:    ${{ steps.gen.outputs.psk }}"
-          echo "=================================================="
+- name: Install xray
+  run: |
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+- name: Configure & start xray
+  run: |
+    # ساخت فایل کانفیگ
+    cat > /usr/local/etc/xray/config.json << 'EOF'
+    { "log": { "loglevel": "warning" }, "inbounds": [ { "port": 10808, "protocol": "socks", "settings": { "auth": "noauth" } } ], "outbounds": [ { "protocol": "vless", "settings": { "vnext": [ { "address": "آدرس-سرور", "port": 443, "users": [ { "id": "UUID-شما", "flow": "xtls-rprx-vision" } ] } ] } } ] }
+    EOF
+    xray run -c /usr/local/etc/xray/config.json &
+    sleep 2
+- name: Set proxy env
+  run: |
+    echo "http_proxy=http://127.0.0.1:10808" >> $GITHUB_ENV
+    echo "https_proxy=http://127.0.0.1:10808" >> $GITHUB_ENV
+    echo "ALL_PROXY=socks5://127.0.0.1:10808" >> $GITHUB_ENV
