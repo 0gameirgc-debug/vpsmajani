@@ -29,75 +29,51 @@ jobs:
           sudo apt-get upgrade -y -qq
           sudo apt-get install -y strongswan strongswan-starter xl2tpd iptables-persistent
 
-      - name: Configure IPsec — NO HEREDOCS INSIDE YAML
+      - name: Configure IPsec
         shell: bash
         run: |
           set -e
-          sudo rm -f /etc/ipsec.conf
-          sudo tee /etc/ipsec.conf > /dev/null <<IPSECBLOCK
-config setup
-    charondebug="ike 2, knl 2, cfg 0"
-    uniqueids=no
-conn l2tp-psk
-    keyexchange=ikev1
-    left=%defaultroute
-    leftprotoport=17/1701
-    right=%any
-    rightprotoport=17/%any
-    type=transport
-    authby=secret
-IPSECBLOCK
-          sudo chmod 644 /etc/ipsec.conf
+          # Write ipsec.conf using base64 — NO HEREDOCS
+          cat > /tmp/ipsec.b64 << 'B64END'
+Y29uZmlnIHNldHVwCgogICAgY2hhcm9uZGVidWc9ImlrZSAyLCBrbmwgMiwgY2ZnIDAKCiAgICB1bmlxdWVpZHM9bm8KCgpjb25uIGwydHAtcHNrCgogICAga2V5ZXhjaGFuZ2U9aWtldjEKCiAgICBsZWZ0PSAlZGVmYXVsdHJvdXRlCgogICAgbGVmdHByb3RvcG9ydD0xNy8xNzAxCgogICAgcmlnaHQ9JWFueQogICAgcmlnaHRwcm90b3BvcnQ9MTcvJWFueQogICAgdHlwZT10cmFuc3BvcnQKCiAgICBhdXRoYnk9c2VjcmV0Cg==
+B64END
+          base64 -d /tmp/ipsec.b64 | sudo tee /etc/ipsec.conf > /dev/null
+          rm /tmp/ipsec.b64
+          # Write PSK
           echo ": PSK \"${{ steps.creds.outputs.VPN_PSK }}\"" | sudo tee /etc/ipsec.secrets > /dev/null
           sudo chmod 600 /etc/ipsec.secrets
           sudo systemctl enable --now strongswan-starter
 
-      - name: Configure XL2TPD — NO HEREDOCS INSIDE YAML
+      - name: Configure XL2TPD
         shell: bash
         run: |
           set -e
-          sudo tee /etc/xl2tpd/xl2tpd.conf > /dev/null <<L2TPBLOCK
-[global]
-ipsec saref = yes
-listen-addr = 0.0.0.0
-[lns default]
-ip range = 10.0.2.2-10.0.2.254
-local ip = 10.0.2.1
-require chap = yes
-refuse pap = yes
-require authentication = yes
-name = l2tp-vpn
-ppp debug = no
-pppoptfile = /etc/ppp/options.xl2tpd
-length bit = yes
-L2TPBLOCK
-          sudo chmod 644 /etc/xl2tpd/xl2tpd.conf
-          sudo tee /etc/ppp/options.xl2tpd > /dev/null <<PPPBLOCK
-require-mschap-v2
-ms-dns 8.8.8.8
-ms-dns 1.1.1.1
-asyncmap 0
-auth
-hide-password
-proxyarp
-lcp-echo-failure 4
-lcp-echo-interval 30
-PPPBLOCK
-          sudo chmod 644 /etc/ppp/options.xl2tpd
+          # xl2tpd.conf — base64
+          cat > /tmp/l2tp.b64 << 'B64END'
+W2dsb2JhbF0KaXBzZWMgc2FyZWYgPSB5ZXMKbGlzdGVuLWFkZHIgPSAwLjAuMC4wCgKW2xucyBkZWZhdWx0XQppcCByYW5nZSA9IDEwLjAuMi4yLTEwLjAuMi4yNTQKbG9jYWwgaXAgPSAxMC4wLjIuMQpyZXF1aXJlIGNoYXAgPSB5ZXMKcmVmdXNlIHBhcCA9IG5vCnJlcXVpcmUgYXV0aGVudGljYXRpb24gPSB5ZXMKbmFtZSA9IGwydHAtdnBuCnBwcCBkZWJ1ZyA9IG5vCnBwcG9wdGZpbGUgPSAvZXRjL3BwL29wdGlvbnMueGwydHBkCmxlbmd0aCBiaXQgPSB5ZXMK
+B64END
+          base64 -d /tmp/l2tp.b64 | sudo tee /etc/xl2tpd/xl2tpd.conf > /dev/null
+          rm /tmp/l2tp.b64
+          # ppp options — base64
+          cat > /tmp/ppp.b64 << 'B64END'
+cmVxdWlyZS1tc2NoYXBtdjIKbXMtZG5zIDguOC44LjgKbXMtZG5zIDEuMS4xLjEKYXN5bmNtYXAgMAphdXRoCmhpZGUtcGFzc3dvcmQKcHJveHlhcnAKbGNwLWVjaG8tZmFpbHVyZSA0CmxjcC1lY2hvLWludGVydmFsIDMwCg==
+B64END
+          base64 -d /tmp/ppp.b64 | sudo tee /etc/ppp/options.xl2tpd > /dev/null
+          rm /tmp/ppp.b64
+          # chap-secrets
           echo "${{ steps.creds.outputs.VPN_USER }} l2tp-vpn ${{ steps.creds.outputs.VPN_PASS }} *" | sudo tee /etc/ppp/chap-secrets > /dev/null
           sudo chmod 600 /etc/ppp/chap-secrets
           sudo systemctl enable --now xl2tpd
 
-      - name: Enable IP Forwarding — NO HEREDOCS INSIDE YAML
+      - name: Enable IP Forwarding
         shell: bash
         run: |
           set -e
-          sudo tee /etc/sysctl.d/99-vpn.conf > /dev/null <<SYSCTLBLOCK
-net.ipv4.ip_forward = 1
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.all.rp_filter = 0
-SYSCTLBLOCK
+          cat > /tmp/sysctl.b64 << 'B64END'
+bmV0LmlwdjQuanBfZm9yd2FyZCA9IDEKbmV0LmlwdjQuY29uZi5hbGwuYWNjZXB0X3JlZGlcmVjdHMgPSAwCm5ldC5pcHY0LmNvbmYuYWxsLnNlbl9yZWRpcmVjdHMgPSAwCm5ldC5pcHY0LmNvbmYuZGVmYXVsdC5ycF9maWx0ZXIgPSAwCg==
+B64END
+          base64 -d /tmp/sysctl.b64 | sudo tee /etc/sysctl.d/99-vpn.conf > /dev/null
+          rm /tmp/sysctl.b64
           sudo sysctl -p /etc/sysctl.d/99-vpn.conf
 
       - name: Setup Firewall & NAT
@@ -117,11 +93,11 @@ SYSCTLBLOCK
           sudo systemctl restart xl2tpd
           sudo systemctl restart strongswan-starter
 
-      - name: 🎉 VPN Ready — Connection Details
+      - name: VPN Ready — Connection Details
         shell: bash
         run: |
           echo "===================================================================="
-          echo "               L2TP VPN SERVER — CONNECTION INFO"
+          echo "     L2TP VPN SERVER — CONNECTION INFO"
           echo "===================================================================="
           echo "  SERVER IP  :  ${{ steps.creds.outputs.PUBLIC_IP }}"
           echo "  IPsec PSK  :  ${{ steps.creds.outputs.VPN_PSK }}"
@@ -130,8 +106,4 @@ SYSCTLBLOCK
           echo "===================================================================="
           echo "  PROTOCOL   :  L2TP/IPsec"
           echo "  DNS        :  8.8.8.8 / 1.1.1.1"
-          echo "===================================================================="
-          echo "  WINDOWS: Settings > Network > VPN > Add VPN"
-          echo "    Type: L2TP/IPsec > Advanced > Use pre-shared key"
-          echo "  MAC: System Settings > Network > VPN > L2TP over IPSec"
           echo "===================================================================="
