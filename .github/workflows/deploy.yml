@@ -10,49 +10,49 @@ jobs:
     steps:
       - name: 1. Update System & Install SSH Server
         run: |
-          sudo apt-get update -y
+          sudo apt-get update -y --fix-missing || true
           sudo apt-get install -y openssh-server
           sudo systemctl enable --now ssh
-          sudo systemctl status ssh --no-pager
 
-      - name: 2. Create Admin Account
+      - name: 2. Create Admin Account & Configure SSH
         run: |
           USERNAME="nvdadmin"
           PASSWORD="P@ssw0rd1qazXSW@#"
           sudo useradd -m -s /bin/bash "$USERNAME" || true
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo "$USERNAME"
-          # Allow password auth for easy login
           sudo sed -i 's/^#PasswordAuthentication/PasswordAuthentication/' /etc/ssh/sshd_config
           sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
+          echo "✅ SSH ready — user: $USERNAME"
 
       - name: 3. Install & Connect Tailscale VPN
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # Install Tailscale
-          curl -fsSL https://tailscale.com/install.sh | sh
+          # Install Tailscale using official script
+          curl -fsSL https://tailscale.com/install.sh | sudo sh
           
-          # Connect to Tailscale network
+          # Connect
           sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="github-ssh-server"
           
-          sleep 5
+          sleep 8
           
-          # Get Tailscale IPv4 address
           TS_IP=$(sudo tailscale ip -4)
           
           echo ""
           echo "=================================================="
-          echo "  >>> READY! <<<"
-          echo "  Tailscale IP : $TS_IP"
-          echo "  Username     : nvdadmin"
-          echo "  Password     : P@ssw0rd1qazXSW@#"
+          echo "  ✅ READY!"
+          echo "  📌 Tailscale IP : $TS_IP"
+          echo "  👤 Username     : nvdadmin"
+          echo "  🔑 Password     : P@ssw0rd1qazXSW@#"
           echo "=================================================="
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
       - name: 4. Keep Server Alive (48 Hours)
         run: |
+          echo "🚀 Server running — connect via: ssh nvdadmin@\$TAILSCALE_IP"
           for ((i=1; i<=2880; i++)); do
             sleep 60
-            echo "[$i/2880] Server running..."
+            echo "[$i/2880] Still running..."
           done
