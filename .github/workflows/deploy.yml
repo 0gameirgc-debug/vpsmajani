@@ -1,61 +1,40 @@
-name: Deploy L2TP VPN on Ubuntu
-run-name: Setting up L2TP VPN — ${{ github.actor }}
+name: Deploy L2TP VPN Server
+run-name: L2TP VPN — ${{ github.actor }} — ${{ github.run_id }}
 on:
-  workflow_dispatch:
-    inputs:
-      vpn_ipsec_key:
-        description: 'IPsec Pre-Shared Key — leave empty to auto-generate'
-        required: false
-        default: ''
-      vpn_username:
-        description: 'VPN Username'
-        required: true
-        default: 'vpnuser'
-      vpn_password:
-        description: 'VPN Password'
-        required: true
-        default: ''
-      public_ip:
-        description: 'Server Public IP — auto-detect if left blank'
-        required: false
-        default: ''
+  workflow_dispatch: {}
 
 jobs:
-  deploy-vpn:
+  vpn-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Gather System Info & Generate Secrets
-        id: secrets
+      - name: Generate Secure Credentials
+        id: creds
         shell: bash
         run: |
           set -e
-          if [[ -z "${{ inputs.vpn_ipsec_key }}" ]]; then
-            VPN_IPSEC_KEY=$(openssl rand -base64 24)
-          else
-            VPN_IPSEC_KEY="${{ inputs.vpn_ipsec_key }}"
-          fi
-          if [[ -z "${{ inputs.public_ip }}" ]]; then
-            PUBLIC_IP=$(curl -s -4 ifconfig.me || curl -s -4 icanhazip.com)
-          else
-            PUBLIC_IP="${{ inputs.public_ip }}"
-          fi
-          echo "VPN_IPSEC_KEY=$VPN_IPSEC_KEY" >> $GITHUB_OUTPUT
+          # Generate strong random credentials — NO user input needed
+          VPN_USER=$(openssl rand -hex 6)
+          VPN_PASS=$(openssl rand -base64 12)
+          VPN_PSK=$(openssl rand -base64 24)
+          PUBLIC_IP=$(curl -s -4 ifconfig.me || curl -s -4 icanhazip.com || echo "127.0.0.1")
+          echo "VPN_USER=$VPN_USER" >> $GITHUB_OUTPUT
+          echo "VPN_PASS=$VPN_PASS" >> $GITHUB_OUTPUT
+          echo "VPN_PSK=$VPN_PSK" >> $GITHUB_OUTPUT
           echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_OUTPUT
-          echo "VPN_USER=${{ inputs.vpn_username }}" >> $GITHUB_OUTPUT
-          echo "VPN_PASS=${{ inputs.vpn_password }}" >> $GITHUB_OUTPUT
 
-      - name: Install L2TP and IPsec Packages
+      - name: Update System & Install Packages
         shell: bash
         run: |
           set -e
-          sudo apt update -y && sudo apt upgrade -y
-          sudo apt install -y strongswan strongswan-starter xl2tpd iptables-persistent
+          sudo apt-get update -qq
+          sudo apt-get upgrade -y -qq
+          sudo apt-get install -y strongswan strongswan-starter xl2tpd iptables-persistent
 
-      - name: Configure IPsec — strongswan
+      - name: Configure IPsec
         shell: bash
         run: |
           set -e
-          sudo tee /etc/ipsec.conf > /dev/null <<'IPSECCONF'
+          sudo bash -c 'cat > /etc/ipsec.conf' <<'EOF'
 config setup
     charondebug="ike 2, knl 2, cfg 0"
     uniqueids=no
@@ -68,20 +47,17 @@ conn l2tp-psk
     rightprotoport=17/%any
     type=transport
     authby=secret
-IPSECCONF
-
-          sudo tee /etc/ipsec.secrets > /dev/null <<EOF
-: PSK "${{ steps.secrets.outputs.VPN_IPSEC_KEY }}"
 EOF
+
+          sudo bash -c "echo ': PSK \"${{ steps.creds.outputs.VPN_PSK }}\"' > /etc/ipsec.secrets"
           sudo chmod 600 /etc/ipsec.secrets
-          sudo systemctl restart strongswan-starter
-          sudo systemctl enable strongswan-starter
+          sudo systemctl enable --now strongswan-starter
 
       - name: Configure XL2TPD
         shell: bash
         run: |
           set -e
-          sudo tee /etc/xl2tpd/xl2tpd.conf > /dev/null <<'L2TPDCONF'
+          sudo bash -c 'cat > /etc/xl2tpd/xl2tpd.conf' <<'EOF'
 [global]
 ipsec saref = yes
 listen-addr = 0.0.0.0
@@ -92,53 +68,49 @@ local ip = 10.0.2.1
 require chap = yes
 refuse pap = yes
 require authentication = yes
-name = l2tp-vpn-server
-ppp debug = yes
+name = l2tp-vpn
+ppp debug = no
 pppoptfile = /etc/ppp/options.xl2tpd
 length bit = yes
-L2TPDCONF
+EOF
 
-          sudo tee /etc/ppp/options.xl2tpd > /dev/null <<'PPPOPTS'
+          sudo bash -c 'cat > /etc/ppp/options.xl2tpd' <<'EOF'
 require-mschap-v2
 ms-dns 8.8.8.8
 ms-dns 1.1.1.1
 asyncmap 0
 auth
 hide-password
-debug
 proxyarp
 lcp-echo-failure 4
 lcp-echo-interval 30
-PPPOPTS
+EOF
 
-          VPN_USER="${{ steps.secrets.outputs.VPN_USER }}"
-          VPN_PASS="${{ steps.secrets.outputs.VPN_PASS }}"
-          echo "$VPN_USER l2tp-vpn-server $VPN_PASS *" | sudo tee /etc/ppp/chap-secrets > /dev/null
+          echo "${{ steps.creds.outputs.VPN_USER }} l2tp-vpn ${{ steps.creds.outputs.VPN_PASS }} *" | sudo tee /etc/ppp/chap-secrets >/dev/null
           sudo chmod 600 /etc/ppp/chap-secrets
-          sudo systemctl restart xl2tpd
-          sudo systemctl enable xl2tpd
+          sudo systemctl enable --now xl2tpd
 
-      - name: Configure Kernel and IP Forwarding
+      - name: Enable IP Forwarding
         shell: bash
         run: |
           set -e
-          sudo tee /etc/sysctl.d/99-vpn-forward.conf > /dev/null <<'SYSCTL'
+          sudo bash -c 'cat > /etc/sysctl.d/99-vpn.conf' <<'EOF'
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.default.rp_filter = 0
 net.ipv4.conf.all.rp_filter = 0
-SYSCTL
-          sudo sysctl -p /etc/sysctl.d/99-vpn-forward.conf
+EOF
+          sudo sysctl -p /etc/sysctl.d/99-vpn.conf
 
-      - name: Set Firewall and NAT Rules
+      - name: Setup Firewall & NAT
         shell: bash
         run: |
           set -e
           sudo iptables -F
           sudo iptables -t nat -F
-          PUBLIC_IFACE=$(ip route get 1.1.1.1 | awk '/dev/ { print $5; exit }')
-          sudo iptables -t nat -A POSTROUTING -o "$PUBLIC_IFACE" -j MASQUERADE
+          IFACE=$(ip route get 1.1.1.1 | awk '/src/ {print $5; exit}')
+          [ -z "$IFACE" ] && IFACE=eth0
+          sudo iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
           sudo iptables -A INPUT -p udp --dport 500 -j ACCEPT
           sudo iptables -A INPUT -p udp --dport 4500 -j ACCEPT
           sudo iptables -A INPUT -p udp --dport 1701 -j ACCEPT
@@ -147,18 +119,21 @@ SYSCTL
           sudo systemctl restart xl2tpd
           sudo systemctl restart strongswan-starter
 
-      - name: VPN Deployment Complete — Details
+      - name: 🎉 VPN Ready — Connection Details
         shell: bash
         run: |
-          echo "============================================================"
-          echo "     L2TP VPN SERVER DETAILS"
-          echo "============================================================"
-          echo "  SERVER IP:     ${{ steps.secrets.outputs.PUBLIC_IP }}"
-          echo "  IPsec PSK:     ${{ steps.secrets.outputs.VPN_IPSEC_KEY }}"
-          echo "  USERNAME:      ${{ steps.secrets.outputs.VPN_USER }}"
-          echo "  PASSWORD:      ${{ steps.secrets.outputs.VPN_PASS }}"
-          echo "============================================================"
-          echo "  Protocol:      L2TP over IPsec"
-          echo "  DNS:           8.8.8.8 / 1.1.1.1"
-          echo "  IP Pool:       10.0.2.2 — 10.0.2.254"
-          echo "============================================================"
+          echo "===================================================================="
+          echo "               L2TP VPN SERVER — CONNECTION INFO"
+          echo "===================================================================="
+          echo "  SERVER IP  :  ${{ steps.creds.outputs.PUBLIC_IP }}"
+          echo "  IPsec PSK  :  ${{ steps.creds.outputs.VPN_PSK }}"
+          echo "  USERNAME   :  ${{ steps.creds.outputs.VPN_USER }}"
+          echo "  PASSWORD   :  ${{ steps.creds.outputs.VPN_PASS }}"
+          echo "===================================================================="
+          echo "  PROTOCOL   :  L2TP/IPsec"
+          echo "  DNS        :  8.8.8.8 / 1.1.1.1"
+          echo "===================================================================="
+          echo "  WINDOWS: Settings > Network > VPN > Add VPN"
+          echo "    Type: L2TP/IPsec > Advanced > Use pre-shared key"
+          echo "  MAC: System Settings > Network > VPN > L2TP over IPSec"
+          echo "===================================================================="
