@@ -1,171 +1,125 @@
-name: MikroTik L2TP VPN Setup
-run-name: Deploy MikroTik + L2TP VPN 🚀
+name: Generate L2TP VPN Config
+run-name: 🔐 ساخت کانفیگ L2TP VPN
 
 on:
   workflow_dispatch:
     inputs:
-      chr_version:
-        description: 'MikroTik CHR Version'
-        required: true
-        default: '7.16.1'
-        type: string
-      vpn_user:
-        description: 'VPN Username'
-        required: true
-        default: 'vpnuser'
-        type: string
-      vpn_pass:
-        description: 'VPN Password'
+      server_address:
+        description: 'آی‌پی یا دامنه سرور VPN شما'
         required: true
         type: string
-      ipsec_psk:
-        description: 'IPsec Pre-Shared Key'
+      server_type:
+        description: 'نوع سرور'
         required: true
-        type: string
-      vpn_pool:
-        description: 'VPN IP Pool'
-        required: true
-        default: '10.0.10.0/24'
-        type: string
+        default: 'generic'
+        type: choice
+        options:
+          - generic
+          - ubuntu/debian (hwdsl2 script)
 
 jobs:
-  deploy:
-    runs-on: self-hosted
-    timeout-minutes: 15
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
     steps:
-      - name: Update system & install dependencies
+      - name: 🔑 تولید اطلاعات تصادفی امن
+        id: gen
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y wget unzip qemu-system-x86 qemu-kvm socat netcat-openbsd jq
+          # تولید نام کاربری تصادفی
+          VPN_USER=$(openssl rand -base64 8 | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9')
+          # تولید پسورد قوی
+          VPN_PASS=$(openssl rand -base64 12)
+          # تولید کلید مشترک IPsec
+          IPSEC_PSK=$(openssl rand -base64 16)
+          # تولید نام اتصال
+          VPN_NAME="VPN-$(date +%Y%m%d-%H%M)"
+          
+          echo "user=$VPN_USER" >> $GITHUB_OUTPUT
+          echo "pass=$VPN_PASS" >> $GITHUB_OUTPUT
+          echo "psk=$IPSEC_PSK" >> $GITHUB_OUTPUT
+          echo "name=$VPN_NAME" >> $GITHUB_OUTPUT
 
-      - name: Download MikroTik CHR image
+      - name: 📄 ساخت فایل‌های کانفیگ
         env:
-          CHR_VER: ${{ inputs.chr_version }}
+          SERVER_ADDR: ${{ inputs.server_address }}
+          VPN_USER: ${{ steps.gen.outputs.user }}
+          VPN_PASS: ${{ steps.gen.outputs.pass }}
+          IPSEC_PSK: ${{ steps.gen.outputs.psk }}
+          VPN_NAME: ${{ steps.gen.outputs.name }}
         run: |
-          wget -q "https://download.mikrotik.com/routeros/${CHR_VER}/chr-${CHR_VER}.img.zip" -O chr.img.zip
-          unzip -o chr.img.zip
-          mv "chr-${CHR_VER}.img" chr.img
-          ls -lh chr.img
+          cat > vpn-config.txt << EOF
+╔══════════════════════════════════════════════════════════╗
+║                کانفیگ اتصال L2TP/IPsec VPN                ║
+╚══════════════════════════════════════════════════════════╝
 
-      - name: Resize CHR disk image
-        run: |
-          qemu-img resize chr.img 256M
+🌐 آدرس سرور:     ${SERVER_ADDR}
+🔌 پروتکل:        L2TP/IPsec
+👤 نام کاربری:    ${VPN_USER}
+🔑 رمز عبور:      ${VPN_PASS}
+🔐 کلید IPsec:    ${IPSEC_PSK}
+📦 محدوده IP:     192.168.42.10–192.168.42.250
+📡 DNS سرورها:    8.8.8.8, 1.1.1.1
 
-      - name: Start MikroTik CHR in background
-        run: |
-          cat > run_chr.sh << 'EOF'
-          #!/bin/bash
-          TMPDIR=$(mktemp -d)
-          cd $TMPDIR
-          cp /home/runner/work/${GITHUB_REPOSITORY#*/}/${GITHUB_REPOSITORY#*/}/chr.img .
-          
-          # Start CHR with port forwarding: 5900=VNC, 2222=SSH, 1701=L2TP, 500/4500=IPsec
-          qemu-system-x86_64 \
-            -enable-kvm \
-            -m 384 \
-            -nographic \
-            -serial mon:stdio \
-            -drive file=chr.img,format=raw,if=virtio \
-            -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::5900-:5900,hostfwd=udp::1701-:1701,hostfwd=udp::500-:500,hostfwd=udp::4500-:4500 \
-            -device virtio-net-pci,netdev=net0 \
-            -no-reboot &
-          echo $! > chr.pid
-          sleep 25
-          EOF
-          chmod +x run_chr.sh
-          bash ./run_chr.sh &
-          sleep 30
+══════════════════════════════════════════════════════════
+📱 راهنمای اتصال:
 
-      - name: Configure L2TP/IPsec on MikroTik
-        env:
-          VPN_USER: ${{ inputs.vpn_user }}
-          VPN_PASS: ${{ inputs.vpn_pass }}
-          IPSEC_PSK: ${{ inputs.ipsec_psk }}
-          VPN_POOL: ${{ inputs.vpn_pool }}
-        run: |
-          # Wait for CHR to be reachable
-          until nc -z localhost 2222; do sleep 2; done
-          echo "MikroTik is reachable"
+🪟 ویندوز:
+  تنظیمات → شبکه و اینترنت → VPN → افزودن اتصال VPN
+  نوع: L2TP/IPsec
+  آدرس سرور: ${SERVER_ADDR}
+  در تنظیمات پیشرفته → کلید مشترک: ${IPSEC_PSK}
+  نام کاربری: ${VPN_USER}
+  رمز عبور: ${VPN_PASS}
 
-          # Generate script for MikroTik
-          cat > mikrotik_setup.rsc << EOF
-          # Set admin password
-          /user set admin password=StrongAdminPass2026!
-          
-          # Create IP pool for VPN
-          /ip pool add name=vpn-pool ranges=10.0.10.2-10.0.10.254
-          
-          # Create PPP profile
-          /ppp profile add name=l2tp-profile local-address=10.0.10.1 remote-address=vpn-pool dns-server=8.8.8.8,1.1.1.1 use-encryption=yes
-          
-          # Enable L2TP Server with IPsec
-          /interface l2tp-server server set enabled=yes default-profile=l2tp-profile authentication=mschap2 use-ipsec=required ipsec-secret="$IPSEC_PSK"
-          
-          # Add VPN user
-          /ppp secret add name="$VPN_USER" password="$VPN_PASS" service=l2tp profile=l2tp-profile
-          
-          # Allow L2TP/IPsec in firewall
-          /ip firewall filter add chain=input protocol=udp port=500 action=accept comment="IKE"
-          /ip firewall filter add chain=input protocol=udp port=4500 action=accept comment="NAT-T"
-          /ip firewall filter add chain=input protocol=udp port=1701 action=accept comment="L2TP"
-          /ip firewall filter add chain=input protocol=ipsec-esp action=accept comment="IPsec-ESP"
-          
-          # NAT for VPN internet access
-          /ip firewall nat add chain=srcnat src-address=10.0.10.0/24 action=masquerade comment=L2TP-MASQ
-          
-          # Print system info
-          /system resource print
-          /ip address print
-          EOF
+🍎 مک / آی‌اواس:
+  تنظیمات → عمومی → VPN → افزودن پیکربندی VPN
+  نوع: L2TP/IPsec
+  توضیح: ${VPN_NAME}
+  سرور: ${SERVER_ADDR}
+  نام حساب: ${VPN_USER}
+  رمز عبور: ${VPN_PASS}
+  کلید مشترک: ${IPSEC_PSK}
 
-          # Upload & execute script — default login: admin / (blank)
-          apt-get install -y sshpass >/dev/null 2>&1
-          sleep 5
-          
-          # Alternative: use expect-style script injection via serial console
-          echo "Script prepared — applying configuration..."
-          cat mikrotik_setup.rsc
-          
-          echo "==== VPN CONFIGURATION ===="
-          echo "Server IP: $(curl -s ifconfig.me)"
-          echo "Protocol: L2TP/IPsec"
-          echo "Port: 1701 (L2TP), 500/4500 (IPsec)"
-          echo "Username: $VPN_USER"
-          echo "Password: $VPN_PASS"
-          echo "IPsec PSK: $IPSEC_PSK"
-          echo "IP Pool: 10.0.10.0/24"
-          echo "DNS: 8.8.8.8, 1.1.1.1"
-          echo "============================"
+🤖 اندروید:
+  تنظیمات → اتصالات → VPN → افزودن VPN
+  نوع: L2TP/IPsec PSK
+  آدرس سرور: ${SERVER_ADDR}
+  کلید مشترک: ${IPSEC_PSK}
+  نام کاربری: ${VPN_USER}
+  رمز عبور: ${VPN_PASS}
 
-      - name: Output VPN Credentials
-        uses: actions/github-script@v7
-        env:
-          SERVER_IP: $(curl -s ifconfig.me)
-          VPN_USER: ${{ inputs.vpn_user }}
-          VPN_PASS: ${{ inputs.vpn_pass }}
-          IPSEC_PSK: ${{ inputs.ipsec_psk }}
+🌐 روتر (میکروتیک/TP-Link/مای‌نت):
+  پروتکل اتصال: L2TP Client
+  آدرس سرور: ${SERVER_ADDR}
+  نام کاربری: ${VPN_USER}
+  رمز عبور: ${VPN_PASS}
+  فعال‌سازی IPsec: ✅ بله
+  کلید مشترک IPsec: ${IPSEC_PSK}
+
+══════════════════════════════════════════════════════════
+💡 راه‌اندازی سرور VPN روی اوبونتو (یک دستور):
+  wget https://get.vpnsetup.net -O vpn.sh && sudo sh vpn.sh
+  سپس اطلاعات بالا رو وارد کن.
+EOF
+
+          cat vpn-config.txt
+
+      - name: 💾 ذخیره کانفیگ به صورت فایل
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const ip = process.env.SERVER_IP;
-            const user = process.env.VPN_USER;
-            const pass = process.env.VPN_PASS;
-            const psk = process.env.IPSEC_PSK;
-            
-            console.log(`
-            =================================================
-                    🎉 VPN SERVER DEPLOYED SUCCESSFULLY
-            =================================================
-            🌐 Server IP:      ${ip}
-            🔌 Protocol:      L2TP/IPsec
-            👤 Username:     ${user}
-            🔑 Password:     ${pass}
-            🔐 IPsec PSK:    ${psk}
-            📦 Remote IP:    10.0.10.2–10.0.10.254
-            📡 DNS:          8.8.8.8, 1.1.1.1
-            =================================================
-            Client Setup Notes:
-            • Windows: Add VPN → L2TP/IPsec → Pre-shared key
-            • macOS/iOS: Settings → VPN → Add Configuration
-            • Android: Settings → Connections → VPN
-            =================================================
-            `);
+          name: vpn-config
+          path: vpn-config.txt
+          retention-days: 30
+
+      - name: 📋 نمایش خلاصه اطلاعات
+        run: |
+          echo "=================================================="
+          echo "✅ کانفیگ VPN آماده شد!"
+          echo "فایل کامل در قسمت Artifacts موجود است."
+          echo "=================================================="
+          echo "آدرس سرور:     ${{ inputs.server_address }}"
+          echo "نام کاربری:    ${{ steps.gen.outputs.user }}"
+          echo "رمز عبور:      ${{ steps.gen.outputs.pass }}"
+          echo "کلید IPsec:    ${{ steps.gen.outputs.psk }}"
+          echo "=================================================="
